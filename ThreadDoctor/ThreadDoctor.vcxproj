@@ -161,6 +161,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="calc.bin" />
+    <None Include="cmd.bin" />
     <None Include="greedylooter.bin" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
