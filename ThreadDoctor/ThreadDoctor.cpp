@@ -122,9 +122,12 @@ std::tuple<HGLOBAL,DWORD> getPayload(Payload payload) {
 
 // prints commandline usage
 int printUsage() {
-	wprintf(L"Usage: ThreadDoctor.exe <-t Injection-Type> <-p Payload> {-n ProcessName|-d ProcessID}\n");
+	wprintf(L"Usage: ThreadDoctor.exe <-t Injection-Type> <-p Payload> [-f DLLPath] {-n ProcessName|-d ProcessID}\n");
 	wprintf(L"  -t <type>          Injection type (1: RemoteThread, 2: DLLPath)\n");
 	wprintf(L"  -p <payload>       x64 payload to use (1: Calculator, 2: Commandline, 2: GreedyLooter)\n");
+	wprintf(L"  -n <PID>           PID of target process\n");
+	wprintf(L"  -d <proc-name>     target process name\n");
+	wprintf(L"  -f <DLL Path>      Path of DLL file, *Required* for DLLPath injection\n");
 	return 0;
 }
 
