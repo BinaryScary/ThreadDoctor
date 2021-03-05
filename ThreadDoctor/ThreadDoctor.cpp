@@ -14,6 +14,7 @@
 // - Implement PAGE_EXECUTE_READWRITE trigger bypass with VirtualProctectEx
 // - Various APC
 // - memory map
+// - Migrate to Cobalt Strike BOF
 
 enum class InjType { None, RemoteThread, DLLPath, ThreadHijack, QueueAPC};
 enum class Payload { None, Calculator, Commandline, GreedyLooter};
@@ -204,6 +205,7 @@ int printUsage() {
 	wprintf(L"Usage: ThreadDoctor.exe <-t Injection-Type> <-p Payload> [-f DLLPath] {-n ProcessName|-d ProcessID}\n");
 	wprintf(L"  -t <type>          Injection type (1: RemoteThread, 2: DLLPath, 3: ThreadHijack, 4: QueueAPC)\n");
 	wprintf(L"  -p <payload>       x64 payload to use (1: Calculator, 2: Commandline, 2: GreedyLooter)\n");
+	wprintf(L"  -i                 try to enable SEDebugPrivilege\n");
 	wprintf(L"  -n <PID>           PID of target process\n");
 	wprintf(L"  -d <proc-name>     target process name\n");
 	wprintf(L"  -f <DLL Path>      Path of DLL file, *Required* for DLLPath injection\n");
@@ -214,6 +216,7 @@ int wmain(int argc, wchar_t *argv[])
 {
 	// commandline Argument parser spaghetti (could use cxxopts or Boost.Program_Options)
 	DWORD processId = -1;
+	BOOL debugFlag = false;
 	InjType type = InjType::None;
 	Payload payload = Payload::None;
 	LPCWSTR dllPath = L"";
@@ -246,6 +249,9 @@ int wmain(int argc, wchar_t *argv[])
 			dllPath = argv[i+1];
 			i++;
 		}
+		else if(!wcscmp(argv[i],L"-i")){
+			debugFlag = true;
+		}
 		else {
 			wprintf(L"[!] Bad argument %s", argv[i]);
 			exit(1);
@@ -260,11 +266,14 @@ int wmain(int argc, wchar_t *argv[])
 		exit(1);
 	}
 
-	// set debug privileges
-	NTSTATUS status = setRtlSEDebug();
-	if (!NT_SUCCESS(status) || status == 0x00000061) {
-		wprintf(L"[!] Enable RtlAdjustPrivilege failed");
-		exit(1);
+	// SEDebugPrivileges needed if injecting into processes not owned by user
+	if (debugFlag) {
+		// set debug privileges
+		NTSTATUS status = setRtlSEDebug();
+		if (!NT_SUCCESS(status) || status == 0x00000061) {
+			wprintf(L"[!] Enable RtlAdjustPrivilege failed");
+			exit(1);
+		}
 	}
 
 	// Injection type cases
